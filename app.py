@@ -293,7 +293,7 @@ if uploaded is not None:
                 st.dataframe(df[selected].describe().to_frame(), use_container_width=True)
                 chart = st.radio("Chart", ["Histogram", "Box plot"], horizontal=True)
                 fig = px.histogram(df, x=selected, title=f"Distribution of {selected}") if chart == "Histogram" else px.box(df, y=selected, title=f"Box plot of {selected}")
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True, key="numeric_explore_chart")
             else:
                 st.info("No numeric columns detected.")
 
@@ -306,13 +306,13 @@ if uploaded is not None:
         if "chat_history" not in st.session_state:
             st.session_state.chat_history = []
 
-        for item in st.session_state.chat_history:
+        for history_index, item in enumerate(st.session_state.chat_history):
             with st.chat_message(item["role"]):
                 st.markdown(item["content"])
                 if item.get("table") is not None:
                     st.dataframe(item["table"], use_container_width=True)
                 if item.get("figure") is not None:
-                    st.plotly_chart(item["figure"], use_container_width=True)
+                    st.plotly_chart(item["figure"], use_container_width=True, key=f"history_plot_{history_index}")
 
         question = st.chat_input("Ask a question about the uploaded dataset…")
         if question:
@@ -326,7 +326,7 @@ if uploaded is not None:
                 if output.get("table") is not None:
                     st.dataframe(output["table"], use_container_width=True)
                 if output.get("figure") is not None:
-                    st.plotly_chart(output["figure"], use_container_width=True)
+                    st.plotly_chart(output["figure"], use_container_width=True, key="current_answer_plot")
             st.session_state.chat_history.append({
                 "role": "assistant",
                 "content": output["answer"],
