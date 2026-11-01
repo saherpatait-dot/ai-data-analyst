@@ -57,6 +57,15 @@ def get_schema(df):
     categorical = [c for c in df.columns if c not in numeric and c not in dates]
     return numeric, categorical, dates, date_map
 
+def dataframe_to_excel_bytes(dataframe: pd.DataFrame, sheet_name: str = "Analysis") -> bytes:
+    """Create an in-memory Excel workbook for a dataframe."""
+    from io import BytesIO
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        dataframe.to_excel(writer, index=False, sheet_name=sheet_name[:31] or "Analysis")
+    return output.getvalue()
+
+
 def norm(text):
     return re.sub(r"[^a-z0-9]+", " ", str(text).lower()).strip()
 
@@ -270,6 +279,14 @@ if uploaded is not None:
         c.metric("Missing cells", f"{int(df.isna().sum().sum()):,}")
         d.metric("Duplicate rows", f"{int(df.duplicated().sum()):,}")
 
+        st.download_button(
+            "⬇️ Download uploaded dataset as Excel",
+            data=dataframe_to_excel_bytes(df, "Dataset"),
+            file_name=f"{uploaded.name.rsplit('.', 1)[0]}_dataset.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_full_dataset",
+        )
+
         with st.expander("Preview data", expanded=True):
             st.dataframe(df.head(20), use_container_width=True)
         with st.expander("Column profile"):
@@ -311,6 +328,13 @@ if uploaded is not None:
                 st.markdown(item["content"])
                 if item.get("table") is not None:
                     st.dataframe(item["table"], use_container_width=True)
+                    st.download_button(
+                        "⬇️ Download these results as Excel",
+                        data=dataframe_to_excel_bytes(item["table"], "Analysis"),
+                        file_name=f"analysis_results_{history_index}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key=f"download_history_{history_index}",
+                    )
                 if item.get("figure") is not None:
                     st.plotly_chart(item["figure"], use_container_width=True, key=f"history_plot_{history_index}")
 
@@ -325,6 +349,13 @@ if uploaded is not None:
                 st.markdown(output["answer"])
                 if output.get("table") is not None:
                     st.dataframe(output["table"], use_container_width=True)
+                    st.download_button(
+                        "⬇️ Download these results as Excel",
+                        data=dataframe_to_excel_bytes(output["table"], "Analysis"),
+                        file_name="analysis_results.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key=f"download_current_{len(st.session_state.chat_history)}",
+                    )
                 if output.get("figure") is not None:
                     st.plotly_chart(output["figure"], use_container_width=True, key="current_answer_plot")
             st.session_state.chat_history.append({
