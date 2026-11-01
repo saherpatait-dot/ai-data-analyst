@@ -9,10 +9,7 @@ st.set_page_config(page_title="AI Data Analyst", page_icon="📊", layout="wide"
 
 st.title("📊 AI Data Analyst")
 st.caption("Upload a CSV or Excel file, then ask questions in everyday language.")
-st.info(
-    "Free deployment mode: calculations run in Python without a paid AI API or a local Ollama server. "
-    "This version uses a reusable question interpreter for common data-analysis tasks."
-)
+st.info("Please select the column names in your dataset for accurate analysis.")
 
 MAX_FILE_MB = 200
 
