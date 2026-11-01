@@ -1,4 +1,5 @@
 import re
+import hashlib
 import pandas as pd
 import numpy as np
 import plotly.express as px
@@ -135,6 +136,9 @@ def answer_question(df, question):
     explicit = mentioned_columns(question, list(df.columns))
     measure = choose_measure(question, numeric, explicit)
     category = choose_category(question, categorical, explicit)
+    # Numeric columns can also be grouping categories (e.g. Price range = 1, 2, 3, 4).
+    if category is None:
+        category = next((c for c in explicit if c != measure and c not in dates), None)
     date_col = next((c for c in explicit if c in dates), None)
     if date_col is None and len(dates) == 1:
         date_col = dates[0]
@@ -192,6 +196,17 @@ def answer_question(df, question):
         return result(f"### Trend: {measure} over time\nAggregated using the sum at the requested time frequency.", temp, fig)
     rank_match = re.search(r"\b(top|bottom)\s+(\d+)\b", q)
     is_rank = rank_match or any(x in q for x in ("highest", "lowest", "rank", "best", "worst", "most sales", "least sales"))
+    count_intent = any(x in q for x in ("number of", "count of", "count the", "how many", "most restaurants", "fewest restaurants", "number of restaurants"))
+    if is_rank and count_intent and category is not None:
+        count_col = category
+        agg = df.groupby(count_col, dropna=False).size().rename("Count").reset_index()
+        descending = not ("bottom" in q or "lowest" in q or "worst" in q or "fewest" in q or "least" in q)
+        agg = agg.sort_values("Count", ascending=not descending, na_position="last")
+        limit = min(int(rank_match.group(2)), 100) if rank_match else 10
+        table = agg.head(limit)
+        label = "Top" if descending else "Bottom"
+        fig = px.bar(table, x=count_col, y="Count", title=f"{label} {len(table)} {count_col} by number of records")
+        return result(f"### {label} {len(table)} {count_col} by number of records", table, fig)
     if is_rank:
         if measure is None or category is None:
             return result(
@@ -255,6 +270,13 @@ def answer_question(df, question):
         fig = px.histogram(df, x=measure, title=f"Distribution of {measure}")
         return result(f"### Distribution of {measure}", df[measure].describe().to_frame(), fig)
 
+    if any(x in q for x in ("total", "sum", "average", "mean", "median")) and not explicit:
+        return result(
+            "I couldn't find a column in this dataset that matches the measure in your question. "
+            f"Available numeric columns: {', '.join(map(str, numeric)) or 'none'}. "
+            "Try asking about one of these columns."
+        )
+
     return result(
         "I couldn't confidently identify the analysis you want. Try **help** for examples, "
         "or name the measure and category explicitly (for example, 'top 5 products by Sales').\n\n"
@@ -316,7 +338,7 @@ if uploaded is not None:
 
         st.header("💬 Ask the Data Analyst")
         st.caption("Examples: “top 5 products by Sales”, “compare Sales by Ship Mode”, “show monthly Sales trend”, “summarize dataset”.")
-        file_signature = f"{uploaded.name}:{uploaded.size}"
+        file_signature = hashlib.sha256(uploaded.getvalue()).hexdigest()
         if st.session_state.get("dataset_signature") != file_signature:
             st.session_state.dataset_signature = file_signature
             st.session_state.chat_history = []
