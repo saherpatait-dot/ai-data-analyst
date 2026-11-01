@@ -181,7 +181,7 @@ def answer_question(df, question):
         temp = temp.set_index("date")["value"].resample(freq).sum().rename(measure).reset_index()
         fig = px.line(temp, x="date", y=measure, markers=True, title=f"{measure} over time")
         return result(f"### Trend: {measure} over time\nAggregated using the sum at the requested time frequency.", temp, fig)
-    freq = "D" if "daily" in q or "by day" in q else "W" if "weekly" in q or "by week" in q else "YE" if "yearly" in q or "by year" in q else "QE" if "quarter" in q else "ME"
+   freq = "D" if "daily" in q or "by day" in q else "W" if "weekly" in q or "by week" in q else "YE" if "yearly" in q or "by year" in q else "QE" if "quarter" in q else "ME"
     rank_match = re.search(r"\b(top|bottom)\s+(\d+)\b", q)
     is_rank = rank_match or any(x in q for x in ("highest", "lowest", "rank", "best", "worst", "most sales", "least sales"))
     if is_rank:
