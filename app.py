@@ -104,7 +104,7 @@ def choose_measure(question, numeric, explicit):
         return numeric[0]
     return None
 
-def choose_category(question, categorical, explicit):
+def choose_category(question, categorical, explicit, numeric=None):
     for col in explicit:
         if col in categorical:
             return col
@@ -121,9 +121,15 @@ def choose_category(question, categorical, explicit):
         (("state", "states"), ("state",)),
         (("country", "countries"), ("country",)),
     ]
+    # Numeric identifier columns (e.g. DEPARTMENT_ID) can be valid grouping categories.
+    numeric = numeric or []
+    groupable = list(categorical) + [
+        c for c in numeric
+        if any(token in norm(c) for token in ("id", "code", "number"))
+    ]
     for triggers, tokens in hints:
         if any(t in q for t in triggers):
-            for c in categorical:
+            for c in groupable:
                 if any(t in norm(c) for t in tokens):
                     return c
     if len(categorical) == 1:
@@ -135,7 +141,7 @@ def answer_question(df, question):
     numeric, categorical, dates, date_map = get_schema(df)
     explicit = mentioned_columns(question, list(df.columns))
     measure = choose_measure(question, numeric, explicit)
-    category = choose_category(question, categorical, explicit)
+    category = choose_category(question, categorical, explicit, numeric)
     # Numeric columns can also be grouping categories (e.g. Price range = 1, 2, 3, 4).
     if category is None:
         category = next((c for c in explicit if c != measure and c not in dates), None)
@@ -195,8 +201,28 @@ def answer_question(df, question):
         fig = px.line(temp, x="date", y=measure, markers=True, title=f"{measure} over time")
         return result(f"### Trend: {measure} over time\nAggregated using the sum at the requested time frequency.", temp, fig)
     rank_match = re.search(r"\b(top|bottom)\s+(\d+)\b", q)
-    is_rank = rank_match or any(x in q for x in ("highest", "lowest", "rank", "best", "worst", "most sales", "least sales"))
+    is_rank = bool(rank_match) or any(x in q for x in ("highest", "lowest", "rank", "best", "worst", "most sales", "least sales"))
     count_intent = any(x in q for x in ("number of", "count of", "count the", "how many", "most restaurants", "fewest restaurants", "number of restaurants"))
+
+    # Count records by a requested group, including phrasing such as "how many employees in each department".
+    if count_intent and category is not None and any(x in q for x in ("each", "per", "by", "in every")):
+        count_col = category
+        table = df.groupby(count_col, dropna=False).size().rename("Count").reset_index()
+        table = table.sort_values("Count", ascending=False, na_position="last")
+        fig = px.bar(table.head(40), x=count_col, y="Count", title=f"Employee/record count by {count_col}")
+        return result(f"### Record count by {count_col}", table, fig)
+
+    # Direct row-level ranking: "who has the highest salary?" / "top 5 employees by salary".
+    row_level_intent = any(x in q for x in ("who has", "which employee", "employees by", "employee by", "people by", "person by"))
+    if measure is not None and (row_level_intent or (is_rank and category is None)):
+        descending = not any(x in q for x in ("bottom", "lowest", "worst", "least"))
+        table = df.sort_values(measure, ascending=not descending, na_position="last")
+        limit = min(int(rank_match.group(2)), 100) if rank_match else 1 if any(x in q for x in ("who has", "which employee")) else 10
+        table = table.head(limit)
+        label = "Highest" if descending and limit == 1 else "Lowest" if not descending and limit == 1 else "Top" if descending else "Bottom"
+        fig = px.bar(table, x=measure, y=table.index.astype(str), orientation="h", title=f"{label} {limit} records by {measure}")
+        return result(f"### {label} {len(table)} records by {measure}", table, fig)
+
     if is_rank and count_intent and category is not None:
         count_col = category
         agg = df.groupby(count_col, dropna=False).size().rename("Count").reset_index()
@@ -215,14 +241,17 @@ def answer_question(df, question):
                 f"Category columns: {', '.join(map(str, categorical)) or 'none'}. "
                 "Example: 'Which are the top 5 products by Sales?'"
             )
-        agg = df.groupby(category, dropna=False)[measure].sum(min_count=1).reset_index()
+        # Respect the aggregation requested in ranking questions.
+        # "Highest average salary by department" must rank means, not sums.
+        agg_name = "mean" if any(x in q for x in ("average", "mean", "avg")) else "sum"
+        agg = df.groupby(category, dropna=False)[measure].agg(agg_name).reset_index()
         descending = not ("bottom" in q or "lowest" in q or "worst" in q or "least" in q)
         agg = agg.sort_values(measure, ascending=not descending, na_position="last")
-        limit = min(int(rank_match.group(2)), 100) if rank_match else 10
+        limit = min(int(rank_match.group(2)), 100) if rank_match else 1 if any(x in q for x in ("highest", "lowest", "best", "worst")) else 10
         table = agg.head(limit)
-        label = "Top" if descending else "Bottom"
-        fig = px.bar(table, x=category, y=measure, title=f"{label} {len(table)} {category} by {measure}")
-        return result(f"### {label} {len(table)} {category} by {measure}\nValues are summed by category.", table, fig)
+        label = "Highest" if descending and limit == 1 else "Lowest" if not descending and limit == 1 else "Top" if descending else "Bottom"
+        fig = px.bar(table, x=category, y=measure, title=f"{label} {len(table)} {category} by {agg_name} {measure}")
+        return result(f"### {label} {len(table)} {category} by {agg_name} {measure}\\nValues use {agg_name} aggregation by category.", table, fig)
 
     if any(x in q for x in ("compare", "comparison", "breakdown", "by category", "by region", "by product", "across")):
         if measure is None or category is None:
