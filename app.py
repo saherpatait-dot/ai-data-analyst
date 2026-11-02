@@ -10,6 +10,8 @@ st.set_page_config(page_title="AI Data Analyst", page_icon="📊", layout="wide"
 st.title("📊 AI Data Analyst")
 st.caption("Upload a CSV or Excel file.")
 st.info("Please select the column names in your dataset for accurate analysis.")
+st.write("Dataset columns:", df.columns.tolist())
+st.write("Dataset data types:", df.dtypes.astype(str).to_dict())
 
 MAX_FILE_MB = 200
 
