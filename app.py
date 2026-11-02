@@ -80,6 +80,20 @@ def ask_nemotron(question, analysis_context):
     # UPDATED: Diagnose empty Nemotron responses.
     message = response.choices[0].message
 
+if message.content:
+    return message.content
+
+if getattr(message, "reasoning_content", None):
+    return (
+        "Nemotron completed its reasoning but did not return "
+        "a final explanation. Please try again."
+    )
+
+return (
+    "Nemotron did not return an explanation. "
+    f"Finish reason: {response.choices[0].finish_reason}"
+)
+
     if message.content:
         return message.content
 
