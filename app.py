@@ -1,14 +1,12 @@
-
 import re
 import hashlib
 from io import BytesIO
-import plotly.express as px
-import streamlit as st
-from openai import OpenAI
+
 import pandas as pd
 import numpy as np
 import plotly.express as px
 import streamlit as st
+from openai import OpenAI
 
 
 # =========================================================
@@ -27,7 +25,59 @@ st.info("Please select the column names in your dataset for accurate analysis.")
 
 MAX_FILE_MB = 200
 
+# =========================================================
+# NVIDIA NEMOTRON CONNECTION
+# =========================================================
 
+@st.cache_resource
+def get_nvidia_client():
+    api_key = st.secrets.get("NVIDIA_API_KEY")
+
+    if not api_key:
+        return None
+
+    return OpenAI(
+        base_url="https://integrate.api.nvidia.com/v1",
+        api_key=api_key,
+    )
+
+
+def ask_nemotron(question, analysis_context):
+    """Explain calculated analysis results using NVIDIA Nemotron."""
+
+    client = get_nvidia_client()
+
+    if client is None:
+        return "NVIDIA_API_KEY is missing from Streamlit Secrets."
+
+    response = client.chat.completions.create(
+        model="nvidia/nemotron-3.5-lightning-30b-a3b",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are an expert business data analyst. "
+                    "Explain the supplied analysis clearly. "
+                    "Never invent data, figures, columns, or trends. "
+                    "If information is missing, say so. "
+                    "Do not claim correlation proves causation."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Question:\n{question}\n\n"
+                    f"Calculated results:\n{analysis_context}"
+                ),
+            },
+        ],
+        temperature=0.2,
+        max_tokens=800,
+    )
+
+    return response.choices[0].message.content or (
+        "The model returned an empty response."
+    )
 # =========================================================
 # LOAD DATASET
 # =========================================================
@@ -290,7 +340,7 @@ def detect_missing_requested_column(question, df):
     for canonical, terms in aliases.items():
         mentioned = any(
             re.search(
-                r"(?<!\\w)" + re.escape(norm(term)) + r"(?!\\w)",
+                r"(?<!\w)" + re.escape(norm(term)) + r"(?!\w)",
                 q,
             )
             for term in terms
@@ -489,10 +539,10 @@ def answer_question(df, question):
         }
     
     
-        measure = choose_measure(
-            question,
-            numeric,
-            explicit,
+    measure = choose_measure(
+        question,
+        numeric,
+        explicit,
         )
 
     category = choose_category(
