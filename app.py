@@ -96,8 +96,9 @@ def ask_nemotron(question, analysis_context):
             return message.content.strip()
 
         return (
-            "Nemotron returned an empty answer. "
-            f"Finish reason: {response.choices[0].finish_reason}"
+            "Nemotron returned no explanation text. "
+            f"Finish reason: {response.choices[0].finish_reason}. "
+            f"Message object: {message!r}"
         )
 
     except Exception as e:
@@ -1245,6 +1246,446 @@ def answer_question(df, question):
     )
 
 
+
+
+# =========================================================
+# AUTOMATED BUSINESS PERFORMANCE REPORT
+# =========================================================
+
+def detect_business_dimensions(df, categorical):
+    """Detect likely geography, product, and customer dimensions by column name."""
+    patterns = {
+        "Geography": ("region", "state", "city", "country", "territory", "province", "market", "postal"),
+        "Product": ("product", "item", "sku", "category", "subcategory", "brand"),
+        "Customer": ("customer", "client", "buyer", "account", "consumer"),
+    }
+    found = {}
+    for label, tokens in patterns.items():
+        matches = [
+            col for col in categorical
+            if any(token in norm(col).split() for token in tokens)
+            or any(norm(col).startswith(token + " ") for token in tokens)
+        ]
+        if matches:
+            found[label] = matches
+    return found
+
+
+def detect_business_measures(df, numeric):
+    """Prioritise common business measures; retain other numeric measures too."""
+    priority = {
+        "Sales / Revenue": ("sales", "revenue", "turnover", "amount", "gmv"),
+        "Profit": ("profit", "earnings", "margin"),
+        "Quantity": ("quantity", "qty", "units", "volume"),
+        "Orders": ("order", "orders"),
+        "Discount": ("discount",),
+        "Cost": ("cost", "expense", "spend"),
+        "Price": ("price",),
+    }
+    selected = {}
+    used = set()
+    for label, tokens in priority.items():
+        for col in numeric:
+            name = norm(col).split()
+            if col not in used and any(token in name for token in tokens):
+                selected[label] = col
+                used.add(col)
+                break
+    for col in numeric:
+        if col not in used:
+            selected[str(col)] = col
+    return selected
+
+
+def _safe_numeric(df, col):
+    return clean_numeric_series(df[col]).replace([np.inf, -np.inf], np.nan)
+
+
+def _fmt(value):
+    if pd.isna(value):
+        return "N/A"
+    return f"{value:,.2f}"
+
+
+def _period_comparison(df, date_values, measure, dimension=None, periods=2):
+    """Compare the two latest complete calendar months available in the data."""
+    temp = pd.DataFrame({
+        "__date": pd.to_datetime(date_values, errors="coerce"),
+        "__value": _safe_numeric(df, measure),
+    })
+    if dimension is not None:
+        temp["__group"] = df[dimension].astype("string").fillna("(Missing)")
+    temp = temp.dropna(subset=["__date", "__value"])
+    if temp.empty:
+        return None, None
+
+    # Exclude the newest calendar month if the dataset does not reach month-end.
+    max_date = temp["__date"].max()
+    month_end = max_date + pd.offsets.MonthEnd(0)
+    complete_through = max_date.normalize() >= month_end.normalize()
+    latest_month = max_date.to_period("M")
+    if not complete_through:
+        latest_month -= 1
+
+    available = sorted(temp["__date"].dt.to_period("M").unique())
+    eligible = [p for p in available if p <= latest_month]
+    if len(eligible) < 2:
+        return None, None
+
+    current_period, previous_period = eligible[-1], eligible[-2]
+    current = temp[temp["__date"].dt.to_period("M") == current_period]
+    previous = temp[temp["__date"].dt.to_period("M") == previous_period]
+    current_total, previous_total = current["__value"].sum(), previous["__value"].sum()
+    delta = current_total - previous_total
+    pct = (delta / abs(previous_total) * 100) if previous_total != 0 else np.nan
+
+    comparison = {
+        "Metric": str(measure),
+        "Previous month": str(previous_period),
+        "Previous value": previous_total,
+        "Latest complete month": str(current_period),
+        "Latest value": current_total,
+        "Change": delta,
+        "Change %": pct,
+        "Rows previous": len(previous),
+        "Rows latest": len(current),
+    }
+
+    drivers = None
+    if dimension is not None:
+        old = previous.groupby("__group", dropna=False)["__value"].sum()
+        new = current.groupby("__group", dropna=False)["__value"].sum()
+        driver = pd.concat([old.rename("Previous"), new.rename("Latest")], axis=1).fillna(0)
+        driver["Change"] = driver["Latest"] - driver["Previous"]
+        if delta != 0:
+            driver["Contribution to net change %"] = driver["Change"] / delta * 100
+        else:
+            driver["Contribution to net change %"] = np.nan
+        drivers = (
+            driver.sort_values("Change", ascending=(delta < 0))
+            .reset_index(names=dimension)
+        )
+    return comparison, drivers
+
+
+def build_business_report(df):
+    """Calculate report tables and factual findings with Pandas only."""
+    numeric, categorical, dates, date_map = get_schema(df)
+    measures = detect_business_measures(df, numeric)
+    dimensions = detect_business_dimensions(df, categorical)
+    report = {
+        "rows": len(df),
+        "columns": len(df.columns),
+        "missing_cells": int(df.isna().sum().sum()),
+        "duplicate_rows": int(df.duplicated().sum()),
+        "measures": measures,
+        "dimensions": dimensions,
+        "date_columns": dates,
+        "tables": {},
+        "charts": {},
+        "facts": [],
+        "limitations": [],
+    }
+
+    # Overall performance: only detected numeric measures are included.
+    overall_rows = []
+    for label, col in measures.items():
+        values = _safe_numeric(df, col).dropna()
+        if values.empty:
+            continue
+        overall_rows.append({
+            "Metric": label,
+            "Column": str(col),
+            "Valid records": int(values.count()),
+            "Total": values.sum(),
+            "Average": values.mean(),
+            "Median": values.median(),
+            "Minimum": values.min(),
+            "Maximum": values.max(),
+        })
+    report["tables"]["Overall performance"] = pd.DataFrame(overall_rows)
+
+    # Dimension summaries.
+    for dimension_type, cols in dimensions.items():
+        for col in cols:
+            for label, measure in measures.items():
+                temp = pd.DataFrame({
+                    str(col): df[col].astype("string").fillna("(Missing)"),
+                    str(measure): _safe_numeric(df, measure),
+                }).dropna(subset=[str(measure)])
+                if temp.empty:
+                    continue
+                grouped = (
+                    temp.groupby(str(col), dropna=False)[str(measure)]
+                    .agg(["sum", "mean", "count"])
+                    .reset_index()
+                    .sort_values("sum", ascending=False)
+                )
+                grouped.columns = [str(col), "Total", "Average", "Records"]
+                safe_key = f"{dimension_type} - {col} - {measure}"
+                report["tables"][safe_key] = grouped.head(100)
+                if len(grouped):
+                    report["facts"].append(
+                        f"{dimension_type} field '{col}': highest {measure} group is "
+                        f"{grouped.iloc[0][str(col)]} with total {_fmt(grouped.iloc[0]['Total'])}; "
+                        f"lowest is {grouped.iloc[-1][str(col)]} with total {_fmt(grouped.iloc[-1]['Total'])}."
+                    )
+
+    # Customer concentration, if customer identifiers are available.
+    for col in dimensions.get("Customer", []):
+        likely_value = next(
+            (v for k, v in measures.items() if k in ("Sales / Revenue", "Profit") or
+             any(t in norm(v).split() for t in ("sales", "revenue", "profit", "amount"))),
+            None,
+        )
+        if likely_value:
+            customer_totals = pd.DataFrame({
+                str(col): df[col].astype("string").fillna("(Missing)"),
+                "Value": _safe_numeric(df, likely_value),
+            }).dropna(subset=["Value"]).groupby(str(col))["Value"].sum().sort_values(ascending=False)
+            total = customer_totals.sum()
+            top_share = customer_totals.head(10).sum() / total * 100 if total else np.nan
+            report["tables"][f"Top customers - {col}"] = customer_totals.head(20).rename("Value").reset_index()
+            report["facts"].append(
+                f"Top 10 customers account for {_fmt(top_share)}% of {likely_value}."
+                if pd.notna(top_share) else "Customer concentration could not be calculated because total value is zero."
+            )
+
+    # Time series and latest complete month-over-month comparisons.
+    if dates:
+        date_col = dates[0]
+        date_values = date_map[date_col]
+        time_rows = []
+        for label, measure in measures.items():
+            temp = pd.DataFrame({
+                "Date": pd.to_datetime(date_values, errors="coerce"),
+                "Value": _safe_numeric(df, measure),
+            }).dropna()
+            if temp.empty:
+                continue
+            monthly = temp.set_index("Date")["Value"].resample("ME").sum().rename(label)
+            time_rows.append(monthly)
+            comparison, _ = _period_comparison(df, date_values, measure)
+            if comparison:
+                report["tables"][f"MoM - {measure}"] = pd.DataFrame([comparison])
+                change = comparison["Change"]
+                pct = comparison["Change %"]
+                direction = "increased" if change > 0 else "decreased" if change < 0 else "was unchanged"
+                report["facts"].append(
+                    f"{measure} {direction} by {_fmt(abs(change))} "
+                    f"({(_fmt(pct) + '%') if pd.notna(pct) else 'percentage change unavailable'}) "
+                    f"from {comparison['Previous month']} to {comparison['Latest complete month']}."
+                )
+                for dimension_type, cols in dimensions.items():
+                    # Attribute month-over-month changes to the detected dimensions.
+                    for dim in cols[:2]:
+                        _, drivers = _period_comparison(df, date_values, measure, dim)
+                        if drivers is not None:
+                            report["tables"][f"Drivers - {measure} by {dim}"] = drivers.head(30)
+        if time_rows:
+            time_table = pd.concat(time_rows, axis=1).fillna(0).reset_index()
+            time_table.rename(columns={"index": "Month"}, inplace=True)
+            report["tables"]["Monthly trends"] = time_table
+            report["charts"]["Monthly trends"] = time_table
+
+        if not time_rows:
+            report["limitations"].append("A date column was detected, but no usable date/measure pairs were available.")
+    else:
+        report["limitations"].append("No date column was detected; time-based comparisons are unavailable.")
+
+    if not numeric:
+        report["limitations"].append("No numeric measures were detected; quantitative performance analysis is limited.")
+    if not dimensions:
+        report["limitations"].append("No likely region, product, or customer dimensions were detected.")
+
+    report["facts"].insert(
+        0,
+        f"Dataset contains {len(df):,} rows and {len(df.columns):,} columns, "
+        f"with {report['missing_cells']:,} missing cells and {report['duplicate_rows']:,} duplicate rows."
+    )
+    return report
+
+
+def report_context(report):
+    """Create a compact, auditable context for Nemotron."""
+    parts = [
+        "You are explaining a report calculated by Pandas. Treat all numbers below as authoritative.",
+        "Do not calculate new figures, infer missing data, claim causation, or introduce facts not listed.",
+        "Separate measured facts from hypotheses. Mention limitations where relevant.",
+        "Dataset profile: " + str({
+            k: report[k] for k in ("rows", "columns", "missing_cells", "duplicate_rows",
+                                   "measures", "dimensions", "date_columns", "limitations")
+        }),
+        "Verified findings:\n" + "\n".join(f"- {x}" for x in report["facts"][:60]),
+    ]
+    for name, table in list(report["tables"].items())[:15]:
+        parts.append(f"Table: {name}\n{table.head(12).to_csv(index=False)}")
+    return "\n\n".join(parts)[:24000]
+
+
+def generate_report_excel(report, ai_narrative=""):
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        pd.DataFrame([{
+            "Rows": report["rows"],
+            "Columns": report["columns"],
+            "Missing cells": report["missing_cells"],
+            "Duplicate rows": report["duplicate_rows"],
+        }]).to_excel(writer, sheet_name="Executive Summary", index=False)
+        pd.DataFrame({"Verified finding": report["facts"]}).to_excel(
+            writer, sheet_name="Key Findings", index=False
+        )
+        if ai_narrative:
+            pd.DataFrame({"Nemotron narrative": ai_narrative.splitlines()}).to_excel(
+                writer, sheet_name="AI Interpretation", index=False
+            )
+        for index, (name, table) in enumerate(report["tables"].items(), start=1):
+            sheet = re.sub(r"[\[\]:*?/\\]", " ", name)[:25].strip() or f"Analysis {index}"
+            # Excel sheet names must be unique.
+            base, suffix = sheet, 1
+            while sheet in writer.book.sheetnames:
+                sheet = f"{base[:27]}{suffix}"
+                suffix += 1
+            table.to_excel(writer, sheet_name=sheet[:31], index=False)
+    return output.getvalue()
+
+
+def generate_report_pdf(report, ai_narrative=""):
+    """Create a simple PDF report; requires reportlab."""
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import mm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    from xml.sax.saxutils import escape
+
+    output = BytesIO()
+    doc = SimpleDocTemplate(output, pagesize=A4, rightMargin=15*mm, leftMargin=15*mm)
+    styles = getSampleStyleSheet()
+    story = [
+        Paragraph("Business Performance Report", styles["Title"]),
+        Paragraph(f"Dataset: {report['rows']:,} rows × {report['columns']:,} columns", styles["Normal"]),
+        Spacer(1, 8),
+        Paragraph("Executive Summary & Data Quality", styles["Heading2"]),
+        Paragraph(f"Missing cells: {report['missing_cells']:,} | Duplicate rows: {report['duplicate_rows']:,}", styles["BodyText"]),
+    ]
+    for fact in report["facts"]:
+        story.append(Paragraph("• " + escape(str(fact)), styles["BodyText"]))
+        story.append(Spacer(1, 3))
+    if ai_narrative:
+        story += [Spacer(1, 8), Paragraph("Business Interpretation", styles["Heading2"]),
+                  Paragraph(escape(ai_narrative).replace("\n", "<br/>"), styles["BodyText"])]
+    for name, frame in report["tables"].items():
+        story += [Spacer(1, 8), Paragraph(escape(name), styles["Heading2"])]
+        view = frame.head(18).copy().fillna("")
+        data = [list(map(str, view.columns))] + view.astype(str).values.tolist()
+        data = [row[:7] for row in data]
+        table = Table(data, repeatRows=1)
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#26364a")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+            ("FONTSIZE", (0, 0), (-1, -1), 7),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ]))
+        story.append(table)
+    doc.build(story)
+    return output.getvalue()
+
+
+def render_business_report(df):
+    st.header("📑 Automated Business Performance Report")
+    st.caption("Pandas calculates the metrics and drivers. Nemotron explains the verified results.")
+
+    # Build once automatically for each newly uploaded dataset.
+    current_signature = hashlib.sha256(
+        pd.util.hash_pandas_object(df, index=True).values.tobytes()
+    ).hexdigest()
+    report_is_new = (
+        st.session_state.get("business_report_signature") != current_signature
+        or st.session_state.get("business_report") is None
+    )
+    if report_is_new:
+        with st.spinner("Automatically analysing business performance and data quality..."):
+            st.session_state["business_report"] = build_business_report(df)
+            st.session_state["business_report_signature"] = current_signature
+            st.session_state.pop("business_report_ai", None)
+
+    if st.button("Refresh business report", key="generate_business_report"):
+        with st.spinner("Recalculating business performance, trends, and contributors..."):
+            st.session_state["business_report"] = build_business_report(df)
+            st.session_state["business_report_signature"] = current_signature
+            st.session_state.pop("business_report_ai", None)
+
+    report = st.session_state.get("business_report")
+    if report is None:
+        st.info("Generate the report to calculate performance KPIs, regional/product/customer breakdowns, time trends, and contribution drivers.")
+        return
+
+    st.subheader("1. Executive Summary")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Rows", f"{report['rows']:,}")
+    m2.metric("Columns", f"{report['columns']:,}")
+    m3.metric("Missing cells", f"{report['missing_cells']:,}")
+    m4.metric("Duplicate rows", f"{report['duplicate_rows']:,}")
+    if report["facts"]:
+        st.markdown("\n".join(f"- {fact}" for fact in report["facts"][:12]))
+
+    st.subheader("2–6. Performance Analysis")
+    if report["tables"].get("Overall performance") is not None:
+        st.markdown("**Overall business performance**")
+        st.dataframe(report["tables"]["Overall performance"], use_container_width=True)
+    for title, frame in report["tables"].items():
+        if title == "Overall performance":
+            continue
+        with st.expander(title):
+            st.dataframe(frame, use_container_width=True)
+            if title == "Monthly trends":
+                chart_frame = frame.set_index("Date") if "Date" in frame.columns else frame
+                date_field = chart_frame.index.name or chart_frame.columns[0]
+                value_cols = [c for c in chart_frame.columns if c != date_field]
+                if value_cols:
+                    st.line_chart(chart_frame[value_cols])
+
+    if report["limitations"]:
+        st.subheader("Analysis limitations")
+        for limitation in report["limitations"]:
+            st.warning(limitation)
+
+    st.subheader("7–11. Insights and Recommendations")
+    if st.button("Ask Nemotron to explain the calculated report", key="explain_business_report"):
+        with st.spinner("Nemotron is interpreting the verified findings..."):
+            st.session_state["business_report_ai"] = ask_nemotron(
+                "Write an executive business performance report with insights, risks, opportunities, and actionable recommendations. Use only the supplied calculated facts. Clearly label hypotheses and do not claim causation.",
+                report_context(report),
+            )
+    narrative = st.session_state.get("business_report_ai", "")
+    if narrative:
+        st.markdown(narrative)
+    else:
+        st.info("Nemotron interpretation is optional. Generate it when you want narrative insights and recommendations.")
+
+    st.subheader("12. Download Report")
+    st.download_button(
+        "⬇️ Download complete Excel report",
+        data=generate_report_excel(report, narrative),
+        file_name="business_performance_report.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="download_business_report_excel",
+    )
+    try:
+        pdf_bytes = generate_report_pdf(report, narrative)
+        st.download_button(
+            "⬇️ Download PDF report",
+            data=pdf_bytes,
+            file_name="business_performance_report.pdf",
+            mime="application/pdf",
+            key="download_business_report_pdf",
+        )
+    except ImportError:
+        st.caption("PDF export requires reportlab. Add `reportlab` to requirements.txt to enable it.")
+
+
 # =========================================================
 # MAIN APPLICATION
 # =========================================================
@@ -1290,6 +1731,10 @@ if uploaded is not None:
                 "**Dataset data types:**",
                 df.dtypes.astype(str).to_dict(),
             )
+
+        # Automated report is a separate workflow; the existing chat analyst remains intact.
+        render_business_report(df)
+
 
         a, b, c, d = st.columns(4)
 
