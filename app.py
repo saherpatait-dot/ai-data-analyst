@@ -1461,12 +1461,75 @@ if uploaded is not None:
             with st.chat_message("user"):
                 st.markdown(question)
 
-            with st.chat_message("assistant"):
+                       with st.chat_message("assistant"):
 
-                with st.spinner("Analyzing your data…"):
+                with st.spinner("Analyzing your data with AI…"):
                     output = answer_question(df, question)
 
+                    # Give Nemotron the real calculated results.
+                    try:
+                        context_parts = [
+                            "Original analysis result:",
+                            str(output["answer"]),
+                        ]
+
+                        table = output.get("table")
+
+                        if table is not None:
+                            context_parts.append(
+                                "Calculated result table:\n"
+                                + table.head(30).to_csv(index=False)
+                            )
+
+                        ai_explanation = ask_nemotron(
+                            question,
+                            "\n\n".join(context_parts),
+                        )
+
+                        output["answer"] = (
+                            output["answer"]
+                            + "\n\n---\n\n"
+                            + "### 🤖 Nemotron's explanation\n"
+                            + ai_explanation
+                        )
+
+                    except Exception as exc:
+                        st.warning(
+                            "The analysis completed, but the AI "
+                            f"explanation failed: {exc}"
+                        )
+
                 st.markdown(output["answer"])
+
+                if output.get("table") is not None:
+                    st.dataframe(
+                        output["table"],
+                        use_container_width=True,
+                    )
+
+                    st.download_button(
+                        "⬇️ Download these results as Excel",
+                        data=dataframe_to_excel_bytes(
+                            output["table"],
+                            "Analysis",
+                        ),
+                        file_name="analysis_results.xlsx",
+                        mime=(
+                            "application/vnd.openxmlformats-officedocument"
+                            ".spreadsheetml.sheet"
+                        ),
+                        key=(
+                            f"download_current_"
+                            f"{len(st.session_state.chat_history)}"
+                        ),
+                    )
+
+                if output.get("figure") is not None:
+                    st.plotly_chart(
+                        output["figure"],
+                        use_container_width=True,
+                        key="current_answer_plot",
+                    )
 
                 if output.get("table") is not None:
                     st.dataframe(
