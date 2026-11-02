@@ -1,3 +1,4 @@
+```python
 import re
 import hashlib
 from io import BytesIO
@@ -24,6 +25,7 @@ st.caption("Upload a CSV or Excel file.")
 st.info("Please select the column names in your dataset for accurate analysis.")
 
 MAX_FILE_MB = 200
+
 
 # =========================================================
 # NVIDIA NEMOTRON CONNECTION
@@ -75,9 +77,19 @@ def ask_nemotron(question, analysis_context):
         max_tokens=800,
     )
 
-    return response.choices[0].message.content or (
-        "The model returned an empty response."
+    # UPDATED: Diagnose empty Nemotron responses.
+    message = response.choices[0].message
+
+    if message.content:
+        return message.content
+
+    return (
+        "The API returned no explanation text. "
+        f"Finish reason: {response.choices[0].finish_reason}. "
+        f"Message: {message}"
     )
+
+
 # =========================================================
 # LOAD DATASET
 # =========================================================
@@ -161,7 +173,6 @@ def clean_numeric_series(series):
     cleaned = cleaned.str.replace("£", "", regex=False)
     cleaned = cleaned.str.replace("%", "", regex=False)
 
-    # Treat common missing-value strings as missing.
     cleaned = cleaned.replace(
         ["", "NA", "N/A", "na", "n/a", "None", "none", "null", "NULL", "-"],
         pd.NA,
@@ -220,8 +231,6 @@ def get_schema(df):
         valid_ratio = converted.notna().mean()
 
         if valid_ratio >= 0.90:
-            # Numeric identifiers and codes should usually remain
-            # categories rather than analytical measures.
             name = str(col).lower()
 
             identifier_tokens = (
@@ -315,7 +324,6 @@ def detect_missing_requested_column(question, df):
 
     q = norm(question)
 
-    # Common analytical terms that imply a requested field.
     aliases = {
         "profit": ["profit", "profits", "earnings"],
         "revenue": ["revenue", "turnover"],
@@ -333,8 +341,6 @@ def detect_missing_requested_column(question, df):
         norm(col): col for col in df.columns
     }
 
-    # If a requested term matches an existing column name,
-    # it is present and should not be reported as missing.
     existing_names = set(existing_columns)
 
     for canonical, terms in aliases.items():
@@ -349,7 +355,6 @@ def detect_missing_requested_column(question, df):
         if not mentioned:
             continue
 
-        # Check whether an existing column matches this concept.
         matching_column_exists = any(
             norm(term) in existing_names
             or any(
@@ -364,10 +369,10 @@ def detect_missing_requested_column(question, df):
 
     return None
 
+
 def choose_measure(question, numeric, explicit):
     """Select the numeric measure requested by the user."""
 
-    # Prefer an explicitly named numeric column.
     for col in explicit:
         if col in numeric:
             return col
@@ -511,19 +516,18 @@ def answer_question(df, question):
 
     q = question.lower().strip()
 
-
     numeric, categorical, dates, date_map = get_schema(df)
-    
+
     explicit = mentioned_columns(
         question,
         list(df.columns),
     )
-    
+
     missing_column = detect_missing_requested_column(
         question,
         df,
     )
-    
+
     if missing_column:
         return {
             "answer": (
@@ -537,13 +541,12 @@ def answer_question(df, question):
             "table": None,
             "figure": None,
         }
-    
-    
+
     measure = choose_measure(
         question,
         numeric,
         explicit,
-        )
+    )
 
     category = choose_category(
         question,
@@ -1266,7 +1269,7 @@ if uploaded is not None:
             f"{len(df):,} rows × {len(df.columns):,} columns"
         )
 
-        # Temporary diagnostics to help verify column detection.
+        # Temporary diagnostics.
         with st.expander("Dataset diagnostics"):
             st.write("**Dataset columns:**", df.columns.tolist())
             st.write(
@@ -1501,51 +1504,14 @@ if uploaded is not None:
 
                 st.markdown(output["answer"])
 
-                if output.get("table") is not None:
-                    st.dataframe(
-                        output["table"],
-                        use_container_width=True,
-                    )
-
-                    st.download_button(
-                        "⬇️ Download these results as Excel",
-                        data=dataframe_to_excel_bytes(
-                            output["table"],
-                            "Analysis",
-                        ),
-                        file_name="analysis_results.xlsx",
-                        mime=(
-                            "application/vnd.openxmlformats-officedocument"
-                            ".spreadsheetml.sheet"
-                        ),
-                        key=(
-                            f"download_current_"
-                            f"{len(st.session_state.chat_history)}"
-                        ),
-                    )
-
-                if output.get("figure") is not None:
-                    st.plotly_chart(
-                        output["figure"],
-                        use_container_width=True,
-                        key="current_answer_plot",
-                    )
+                # UPDATED: Display the current table only once.
+                # The duplicate current-result download buttons
+                # have been removed.
 
                 if output.get("table") is not None:
                     st.dataframe(
                         output["table"],
                         use_container_width=True,
-                    )
-
-                    st.download_button(
-                        "⬇️ Download these results as Excel",
-                        data=dataframe_to_excel_bytes(
-                            output["table"],
-                            "Analysis",
-                        ),
-                        file_name="analysis_results.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key=f"download_current_{len(st.session_state.chat_history)}",
                     )
 
                 if output.get("figure") is not None:
@@ -1581,4 +1547,4 @@ else:
     st.write("- Which columns have missing values?")
     st.write("- Show correlations between numeric columns.")
     st.write("- Summarize this dataset.")
-
+```
