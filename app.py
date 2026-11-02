@@ -31,6 +31,11 @@ MAX_FILE_MB = 200
 # NVIDIA NEMOTRON CONNECTION
 # =========================================================
 
+
+# =========================================================
+# NVIDIA NEMOTRON CONNECTION
+# =========================================================
+
 @st.cache_resource
 def get_nvidia_client():
     api_key = st.secrets.get("NVIDIA_API_KEY")
@@ -41,6 +46,7 @@ def get_nvidia_client():
     return OpenAI(
         base_url="https://integrate.api.nvidia.com/v1",
         api_key=api_key,
+        timeout=30,
     )
 
 
@@ -59,17 +65,20 @@ def ask_nemotron(question, analysis_context):
                 "role": "system",
                 "content": (
                     "You are an expert business data analyst. "
-                    "Explain the supplied analysis clearly. "
+                    "Explain the supplied analysis clearly and briefly. "
                     "Never invent data, figures, columns, or trends. "
                     "If information is missing, say so. "
-                    "Do not claim correlation proves causation."
+                    "Do not claim correlation proves causation. "
+                    "Return only the final user-facing explanation. "
+                    "Do not include your internal reasoning."
                 ),
             },
             {
                 "role": "user",
                 "content": (
                     f"Question:\n{question}\n\n"
-                    f"Calculated results:\n{analysis_context}"
+                    f"Calculated results:\n{analysis_context}\n\n"
+                    "Explain the results in 3 to 5 concise sentences."
                 ),
             },
         ],
@@ -77,30 +86,20 @@ def ask_nemotron(question, analysis_context):
         max_tokens=1200,
     )
 
-    # UPDATED: Diagnose empty Nemotron responses.
     message = response.choices[0].message
 
-if message.content:
-    return message.content
+    if message.content:
+        return message.content
 
-if getattr(message, "reasoning_content", None):
-    return (
-        "Nemotron completed its reasoning but did not return "
-        "a final explanation. Please try again."
-    )
-
-return (
-    "Nemotron did not return an explanation. "
-    f"Finish reason: {response.choices[0].finish_reason}"
-)
-
-if message.content:
-    return message.content
+    if getattr(message, "reasoning_content", None):
+        return (
+            "Nemotron returned reasoning but no final explanation. "
+            "Please try again."
+        )
 
     return (
-        "The API returned no explanation text. "
-        f"Finish reason: {response.choices[0].finish_reason}. "
-        f"Message: {message}"
+        "Nemotron returned no explanation. "
+        f"Finish reason: {response.choices[0].finish_reason}"
     )
 
 
