@@ -1,4 +1,4 @@
-```python
+
 import re
 import hashlib
 from io import BytesIO
@@ -1388,4 +1388,4 @@ else:
     st.write("- Which columns have missing values?")
     st.write("- Show correlations between numeric columns.")
     st.write("- Summarize this dataset.")
-```
+
