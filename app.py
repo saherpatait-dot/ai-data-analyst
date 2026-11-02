@@ -94,8 +94,8 @@ return (
     f"Finish reason: {response.choices[0].finish_reason}"
 )
 
-    if message.content:
-        return message.content
+if message.content:
+    return message.content
 
     return (
         "The API returned no explanation text. "
