@@ -255,6 +255,63 @@ def mentioned_columns(question, columns):
     )
 
 
+def detect_missing_requested_column(question, df):
+    """
+    Detect when a question requests a measure or field
+    that is not present in the uploaded dataset.
+    """
+
+    q = norm(question)
+
+    # Common analytical terms that imply a requested field.
+    aliases = {
+        "profit": ["profit", "profits", "earnings"],
+        "revenue": ["revenue", "turnover"],
+        "sales": ["sales"],
+        "quantity": ["quantity", "units sold"],
+        "discount": ["discount", "discounts"],
+        "cost": ["cost", "costs", "expenses", "expense"],
+        "salary": ["salary", "salaries", "wages"],
+        "age": ["age"],
+        "price": ["price", "prices"],
+        "rating": ["rating", "ratings", "score"],
+    }
+
+    existing_columns = {
+        norm(col): col for col in df.columns
+    }
+
+    # If a requested term matches an existing column name,
+    # it is present and should not be reported as missing.
+    existing_names = set(existing_columns)
+
+    for canonical, terms in aliases.items():
+        mentioned = any(
+            re.search(
+                r"(?<!\\w)" + re.escape(norm(term)) + r"(?!\\w)",
+                q,
+            )
+            for term in terms
+        )
+
+        if not mentioned:
+            continue
+
+        # Check whether an existing column matches this concept.
+        matching_column_exists = any(
+            norm(term) in existing_names
+            or any(
+                norm(term) in column_name.split()
+                for column_name in existing_names
+            )
+            for term in terms
+        )
+
+        if not matching_column_exists:
+            return canonical
+
+    return None
+
 def choose_measure(question, numeric, explicit):
     """Select the numeric measure requested by the user."""
 
@@ -402,18 +459,39 @@ def answer_question(df, question):
 
     q = question.lower().strip()
 
-    numeric, categorical, dates, date_map = get_schema(df)
 
+    numeric, categorical, dates, date_map = get_schema(df)
+    
     explicit = mentioned_columns(
         question,
         list(df.columns),
     )
-
-    measure = choose_measure(
+    
+    missing_column = detect_missing_requested_column(
         question,
-        numeric,
-        explicit,
+        df,
     )
+    
+    if missing_column:
+        return {
+            "answer": (
+                f"⚠️ The requested column **'{missing_column}'** "
+                "was not found in your dataset.\n\n"
+                f"**Available columns:** "
+                f"{', '.join(map(str, df.columns))}\n\n"
+                "Please check the column name or upload a dataset "
+                "that contains this information."
+            ),
+            "table": None,
+            "figure": None,
+        }
+    
+    
+        measure = choose_measure(
+            question,
+            numeric,
+            explicit,
+        )
 
     category = choose_category(
         question,
