@@ -32,28 +32,55 @@ def load_dataset(file_bytes: bytes, filename: str) -> pd.DataFrame:
         return pd.read_excel(buffer)
     raise ValueError("Please upload a CSV or Excel file.")
 
+```python
 def parse_dates(series):
-    """Parse dates conservatively; return None if there are too few valid dates."""
-    parsed = pd.to_datetime(series, errors="coerce")
+    """Detect dates stored as text in CSV or Excel files."""
     if len(series.dropna()) == 0:
         return None
-    if parsed.notna().mean() >= 0.75:
+
+    try:
+        parsed = pd.to_datetime(
+            series, errors="coerce", format="mixed"
+        )
+    except (TypeError, ValueError):
+        parsed = pd.to_datetime(series, errors="coerce")
+
+    valid_ratio = parsed.notna().sum() / max(series.notna().sum(), 1)
+
+    if valid_ratio >= 0.75:
         return parsed
+
     return None
 
+
 def get_schema(df):
-    numeric = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c]) and not pd.api.types.is_bool_dtype(df[c])]
+    numeric = [
+        c for c in df.columns
+        if pd.api.types.is_numeric_dtype(df[c])
+        and not pd.api.types.is_bool_dtype(df[c])
+    ]
+
     date_map = {}
+
     for c in df.columns:
         if pd.api.types.is_datetime64_any_dtype(df[c]):
             date_map[c] = pd.to_datetime(df[c], errors="coerce")
-        elif any(token in str(c).lower() for token in ("date", "time", "timestamp")):
+        elif any(
+            token in str(c).lower()
+            for token in ("date", "time", "timestamp")
+        ):
             parsed = parse_dates(df[c])
             if parsed is not None:
                 date_map[c] = parsed
-    dates = list(date_map)
-    categorical = [c for c in df.columns if c not in numeric and c not in dates]
+
+    dates = list(date_map.keys())
+    categorical = [
+        c for c in df.columns
+        if c not in numeric and c not in dates
+    ]
+
     return numeric, categorical, dates, date_map
+
 
 def dataframe_to_excel_bytes(dataframe: pd.DataFrame, sheet_name: str = "Analysis") -> bytes:
     """Create an in-memory Excel workbook for a dataframe."""
