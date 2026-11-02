@@ -74,7 +74,7 @@ def ask_nemotron(question, analysis_context):
             },
         ],
         temperature=0.2,
-        max_tokens=300,
+        max_tokens=1200,
     )
 
     # UPDATED: Diagnose empty Nemotron responses.
