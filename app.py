@@ -1461,7 +1461,7 @@ if uploaded is not None:
             with st.chat_message("user"):
                 st.markdown(question)
 
-                       with st.chat_message("assistant"):
+            with st.chat_message("assistant"):
 
                 with st.spinner("Analyzing your data with AI…"):
                     output = answer_question(df, question)
