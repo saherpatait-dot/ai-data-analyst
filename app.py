@@ -32,7 +32,7 @@ def load_dataset(file_bytes: bytes, filename: str) -> pd.DataFrame:
         return pd.read_excel(buffer)
     raise ValueError("Please upload a CSV or Excel file.")
 
-```python
+
 def parse_dates(series):
     """Detect dates stored as text in CSV or Excel files."""
     if len(series.dropna()) == 0:
