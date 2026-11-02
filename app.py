@@ -58,49 +58,50 @@ def ask_nemotron(question, analysis_context):
     if client is None:
         return "NVIDIA_API_KEY is missing from Streamlit Secrets."
 
-    response = client.chat.completions.create(
-        model="nvidia/nemotron-3.5-lightning-30b-a3b",
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are an expert business data analyst. "
-                    "Explain the supplied analysis clearly and briefly. "
-                    "Never invent data, figures, columns, or trends. "
-                    "If information is missing, say so. "
-                    "Do not claim correlation proves causation. "
-                    "Return only the final user-facing explanation. "
-                    "Do not include your internal reasoning."
-                ),
+    try:
+        response = client.chat.completions.create(
+            model="nvidia/nemotron-3.5-lightning-30b-a3b",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an expert business data analyst. "
+                        "Explain the supplied calculated results clearly. "
+                        "Never invent data, figures, columns, or trends. "
+                        "Use only the supplied results. "
+                        "Keep your answer to 3 to 5 sentences."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Question: {question}\n\n"
+                        f"Calculated results:\n{analysis_context}\n\n"
+                        "Explain these results directly."
+                    ),
+                },
+            ],
+            temperature=0.2,
+            max_tokens=500,
+            extra_body={
+                "chat_template_kwargs": {
+                    "enable_thinking": False
+                }
             },
-            {
-                "role": "user",
-                "content": (
-                    f"Question:\n{question}\n\n"
-                    f"Calculated results:\n{analysis_context}\n\n"
-                    "Explain the results in 3 to 5 concise sentences."
-                ),
-            },
-        ],
-        temperature=0.2,
-        max_tokens=1200,
-    )
-
-    message = response.choices[0].message
-
-    if message.content:
-        return message.content
-
-    if getattr(message, "reasoning_content", None):
-        return (
-            "Nemotron returned reasoning but no final explanation. "
-            "Please try again."
         )
 
-    return (
-        "Nemotron returned no explanation. "
-        f"Finish reason: {response.choices[0].finish_reason}"
-    )
+        message = response.choices[0].message
+
+        if message.content and message.content.strip():
+            return message.content.strip()
+
+        return (
+            "Nemotron returned an empty answer. "
+            f"Finish reason: {response.choices[0].finish_reason}"
+        )
+
+    except Exception as e:
+        return f"NVIDIA API error: {str(e)}"
 
 
 # =========================================================
